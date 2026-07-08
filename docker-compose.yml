@@ -1,0 +1,41 @@
+services:
+  # --- Backend API ---
+  backend:
+    build:
+      context: ./backend
+      target: dev
+    container_name: notable-api
+    ports:
+      - "5000:5000"
+    env_file:
+      - ./backend/.env
+    environment:
+      # Override .env to point at the compose MongoDB service
+      MONGODB_URL: mongodb://mongo:27017/notable
+    volumes:
+      # Hot-reload: mount source code into the container
+      - ./backend/src:/app/src
+      - ./backend/package.json:/app/package.json
+    depends_on:
+      mongo:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # --- MongoDB ---
+  mongo:
+    image: mongo:7
+    container_name: notable-mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  mongo-data:
