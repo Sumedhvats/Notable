@@ -682,16 +682,29 @@ gantt
 - [ ] `npm install` + verify build works
 - [ ] Create `src/index.ts` with Express skeleton (CORS, JSON, health endpoint)
 - [ ] Create `src/utils/logger.ts`
+- [ ] Create `src/middleware/validate.middleware.ts` — generic Zod validation middleware:
+  - `validate(schema)` returns Express middleware that validates `req.body`/`req.query`/`req.params`
+  - On failure: returns `400 { error: 'ValidationError', details: [...] }` with Zod error paths
+- [ ] Add `express-timeout` middleware for global request timeout (30s default, configurable via `REQUEST_TIMEOUT_MS` env var)
+- [ ] Install `express-rate-limit` for in-memory rate limiting (configured in later days)
 - [ ] **Checkpoint**: `npm run dev` starts server, `GET /health` returns 200
 
-#### Day 2 — OAuth 2.0: Google Provider
+#### Day 2 — OAuth 2.0: Google Provider + Refresh Tokens
 - [ ] Create `src/models/user.model.ts` (provider, providerId, email, name, avatar)
+- [ ] Create `src/models/refreshToken.model.ts` — stores: `userId`, `token` (crypto.randomUUID), `expiresAt`, `revoked` (boolean, default false); compound index on `{ userId, revoked }`
 - [ ] Create `src/config/passport.ts` with Google strategy
 - [ ] Create `src/routes/auth.routes.ts` + `src/controllers/auth.controller.ts`
 - [ ] Create `src/middleware/auth.middleware.ts` (JWT verify)
+- [ ] **JWT with refresh tokens**:
+  - On OAuth success: issue short-lived access token (15 min) + refresh token (30 days, stored in MongoDB)
+  - `POST /api/v1/auth/refresh` — validate refresh token, check not revoked, issue new access token + rotate refresh token
+  - `POST /api/v1/auth/logout` — revoke all refresh tokens for the user (set `revoked: true`)
+  - Access token carries `{ userId, type: 'access' }`, refresh token is opaque UUID stored in DB
+  - `requireAuth` middleware only accepts access tokens (rejects if `type !== 'access'`)
+- [ ] Add `JWT_ACCESS_EXPIRES_IN=15m` and `JWT_REFRESH_EXPIRES_IN=30d` to `.env`
 - [ ] Add `express-session` + Passport initialization to `index.ts`
 - [ ] Set up Google OAuth credentials in Google Cloud Console
-- [ ] **Checkpoint**: Open `/api/v1/auth/google` in browser → Google login → JWT returned
+- [ ] **Checkpoint**: Open `/api/v1/auth/google` in browser → Google login → access token + refresh token returned. Access token works for 15 min, refresh extends it. Logout revokes all tokens.
 
 #### Day 3 — OAuth 2.0: GitHub Provider + Auth Polish
 - [ ] Add GitHub strategy to `passport.ts`
@@ -732,7 +745,12 @@ gantt
 - [ ] Sign up for Voyage AI + Pinecone + Groq accounts
 - [ ] Create Pinecone index `notable` (512 dimensions, cosine metric)
 - [ ] Add API keys to `.env`
-- [ ] Add Redis service to `docker-compose.yml` (port 6379, healthcheck)
+- [ ] Add Redis service to `docker-compose.yml`:
+  - Port 6379, healthcheck with `redis-cli ping`
+  - Redis config: `appendonly yes` (AOF persistence — fsync every second)
+  - Mount volume: `redis-data:/data` (survives container restart)
+  - Set `maxmemory-policy noeviction` (don't evict job data)
+  - Add `redis-data` named volume to `volumes:` section
 - [ ] Install `bullmq` + `ioredis` npm packages
 - [ ] Create `src/config/queue.ts`:
   - Init `ioredis` connection (`REDIS_URL` env var, fallback `localhost:6379`)
@@ -743,8 +761,17 @@ gantt
   - Init worker that connects to `memoryQueue`
   - Process function placeholder: `async (job) => { /* Day 11 */ }`
 - [ ] Add `REDIS_URL` to `.env`
+- [ ] Implement **graceful shutdown** in `src/index.ts`:
+  - `process.on('SIGTERM')` / `process.on('SIGINT')` handler
+  - Steps: stop accepting new requests → `worker.close()` (wait for active jobs) → `queue.close()` → mongoose.disconnect() → `process.exit(0)`
+  - Timeout: force exit after 10s if graceful shutdown hangs
+- [ ] Add `REQUEST_TIMEOUT_MS=30000` and `RATE_LIMIT_WINDOW_MS=60000` and `RATE_LIMIT_MAX=30` to `.env`
+- [ ] Add `src/middleware/rateLimit.middleware.ts` — in-memory rate limiter using `express-rate-limit`:
+  - Default: 30 requests per minute per IP
+  - Separate stricter limit for auth endpoints (10 req/min on OAuth failure routes)
+  - Separate looser limit for public collection endpoints (60 req/min per IP)
 - [ ] Write basic test: enqueue a job → worker picks it up → job completes
-- [ ] **Checkpoint**: Redis running, BullMQ configured, worker skeleton starts, jobs flow through
+- [ ] **Checkpoint**: Redis running, BullMQ configured, worker skeleton starts, graceful shutdown works (`SIGTERM` → finishes active jobs → exits cleanly)
 
 ---
 
@@ -775,16 +802,28 @@ gantt
 - [ ] **Checkpoint**: All Pinecone operations work, cleanup is reliable
 
 #### Day 11 — Memory Controller: Async Pipeline with BullMQ
-- [ ] Create `src/models/memory.model.ts` with fields: `url`, `title`, `description`, `contentType`, `source`, `metadata`, `tags`, `entities`, `summary`, `chunkCount`, `status` (`pending | processing | ready | failed`), `errorMessage`, `jobId`
-- [ ] Create `src/routes/memory.routes.ts` + `src/controllers/memory.controller.ts`
+- [ ] Create `src/models/memory.model.ts` with fields: `url`, `title`, `description`, `contentType`, `source`, `metadata`, `tags`, `entities`, `summary`, `chunkCount`, `status` (`pending | processing | ready | failed`), `errorMessage`, `jobId`, `idempotencyKey`
+- [ ] Create Zod validation schemas in `src/schemas/memory.schema.ts`:
+  - `createMemorySchema`: `url` (string, url), `tags` (optional string array), `idempotencyKey` (optional uuid string)
+  - `createFromExtensionSchema`: `url`, `title`, `content` (string, min 1), `description` (optional), `metadata` (optional), `tags` (optional), `idempotencyKey` (optional uuid)
+  - `askSchema`: `question` (string, min 1, max 2000)
+  - `listMemoriesSchema`: `page` (optional number), `limit` (optional number, max 100), `status` (optional enum), `tags` (optional string)
+- [ ] Create `src/routes/memory.routes.ts` + `src/controllers/memory.controller.ts` with Zod middleware applied
+- [ ] Implement **idempotency key** support:
+  - On `POST /memories` and `POST /memories/extension`, check `Idempotency-Key` header or `idempotencyKey` body field
+  - Store `{ key, memoryId, status }` in a Redis hash with TTL (24h) using `ioredis` directly
+  - If same key seen within TTL → return existing `{ memoryId, status }` without creating duplicate
+  - This protects against: client retries after timeout, BullMQ re-delivery after worker crash, and double-click on save button
 - [ ] Implement `createFromUrl` (async — returns immediately):
-  1. Check duplicate URL → return existing if found
-  2. Create Memory doc with `status: 'pending'`
-  3. Enqueue BullMQ job: `{ memoryId, url, mode: 'web' }`
-  4. Return `202 Accepted` with `{ memoryId, status: 'pending' }`
+  1. Check idempotency key → return existing if found
+  2. Check duplicate URL → return existing if found  
+  3. Create Memory doc with `status: 'pending'`
+  4. Store idempotency key in Redis: `{ key → memoryId }` (24h TTL)
+  5. Enqueue BullMQ job: `{ memoryId, url, mode: 'web' }`
+  6. Return `202 Accepted` with `{ memoryId, status: 'pending' }`
 - [ ] Implement `createFromExtension` (same, skip scraping — sends content directly):
-  1. Create Memory doc with `status: 'pending'`
-  2. Enqueue BullMQ job: `{ memoryId, content, mode: 'extension' }`
+  1. Same idempotency check
+  2. Create Memory doc → store key → enqueue job with content
   3. Return `202 Accepted`
 - [ ] Implement `GET /memories/:id/status` — lightweight endpoint returning just `{ status, errorMessage }` (for frontend polling)
 - [ ] **Implement the worker** (`src/workers/memory.worker.ts` process function):
@@ -798,8 +837,12 @@ gantt
   8. Update Memory: `status: 'ready'`, `chunkCount`, store title/metadata
   9. On any error: `status: 'failed'`, `errorMessage`, log error
   10. Job retries automatically on failure (BullMQ: 3 attempts, exponential backoff)
-- [ ] Wire worker into `src/index.ts` (start worker alongside Express)
-- [ ] **Checkpoint**: `POST /memories` returns 202 immediately → poll `/status` → eventually `ready`. Pipeline survives transient API failures via retries.
+- [ ] Implement **DLQ persistence**: `src/services/dlq.service.ts`
+  - BullMQ `failed` event handler: serialize failed job data (memoryId, url, error, attempt count, timestamp) to a JSON file on disk (`data/dlq/YYYY-MM-DD.jsonl`)
+  - On worker startup: scan `data/dlq/` for unprocessed failures, log a warning with count
+  - Optional: re-enqueue from DLQ via a `POST /admin/dlq/reprocess` endpoint
+- [ ] Wire worker + DLQ handler into `src/index.ts` (start worker alongside Express)
+- [ ] **Checkpoint**: `POST /memories` returns 202 immediately → poll `/status` → eventually `ready`. Same idempotency key returns cached result. Failed jobs land in DLQ file. Pipeline survives transient failures via retries.
 
 #### Day 12 — Memory Controller: CRUD + QA Service + Status Polling
 - [ ] Implement `list` (paginated), `get`, `delete` (+ Pinecone cleanup via `vectorStore.deleteByMemory`)
