@@ -60,17 +60,20 @@
 **What it does:** Ask natural-language questions across all your saved bookmarks. "What did I save about Docker networking?" → AI reads all relevant chunks and answers with source citations.
 
 **How it will work:**
-1. **Save pipeline**: `POST /memories { url }` → scrape → **chunker** (paragraph split, ~500 token chunks, ~50 token overlap) → **embedding** (Voyage AI `voyage-3-lite` → 512-dim vectors) → **vector store** (Pinecone upsert, namespace = `userId`, vector ID = `{memoryId}_{chunkIndex}`, metadata stores chunk text).
-2. **Query pipeline**: `POST /ask { question }` → embed question → Pinecone query (top K=5 most similar chunks) → build prompt with question + chunks → **Groq** (`llama-3.3-70b-versatile`) generates answer with source citations.
-3. Memory document in MongoDB tracks status (`pending → processing → ready/failed`) and metadata (title, tags, summary).
+1. **Save pipeline (async via BullMQ)**: `POST /memories { url }` → create Memory doc (`status: pending`) → enqueue BullMQ job → return `202 Accepted { memoryId }`. A background **Worker** picks up the job: scrape → **chunker** (paragraph split, ~500 token chunks, ~50 token overlap) → **embedding** (Voyage AI `voyage-3-lite` → 512-dim vectors) → **vector store** (Pinecone upsert, namespace = `userId`, vector ID = `{memoryId}_{chunkIndex}`, metadata stores chunk text) → update Memory to `ready`.
+2. **Enrichment (async via separate BullMQ queue)**: After main pipeline completes, a lower-priority enrichment job is enqueued: auto-tag, auto-summary, entity extraction → update Memory fields.
+3. **Frontend polls** `GET /memories/:id/status` until status flips to `ready` or `failed`.
+4. **Query pipeline (synchronous)**: `POST /ask { question }` → embed question → Pinecone query (top K=5 most similar chunks) → build prompt with question + chunks → **Groq** (`llama-3.3-70b-versatile`) generates answer with source citations.
+5. BullMQ provides automatic retries (3 attempts, exponential backoff) if any step fails (API timeout, rate limit, network error).
 
 **Limitations:**
 - **API keys required**: Voyage AI (free 200M tokens), Pinecone (free 2GB), Groq (6000 tok/min free).
 - **Free tier limits**: Pinecone free tier caps at 100 upserts/sec and 2GB total. Large collections will hit this.
 - **Embedding cost scales** with number of chunks. A 100-page book = thousands of chunks = millions of tokens.
-- **No background job queue** — the sync pipeline blocks the HTTP request. For large pages, this could take 10+ seconds.
+- **Requires Redis** — BullMQ depends on Redis. Adds a third service to the stack (MongoDB + Redis + API).
 - **No re-embedding on content change** — if a page is re-scraped, old vectors are orphaned unless explicitly deleted.
 - **No cross-user RAG** — queries only search the authenticated user's namespace.
+- **Frontend needs polling** — no real-time push yet (WebSocket planned for future).
 
 ---
 
@@ -192,9 +195,11 @@
 | URL Scraping (13 adapters) | ✅ Done | — |
 | Bot Challenge Detection | ✅ Done | — |
 | Chunker Service | 🔲 Day 6 | — |
+| Redis + BullMQ Setup | 🔲 Day 7 | Redis in Docker |
 | Embedding (Voyage AI) | 🔲 Day 8 | Chunker |
 | Vector Store (Pinecone) | 🔲 Days 9–10 | Embedding |
-| Memory CRUD + Pipeline | 🔲 Days 11–12 | Vector Store |
+| Async Memory Pipeline (BullMQ) | 🔲 Day 11 | Vector Store + BullMQ |
+| Memory CRUD + Status Polling | 🔲 Day 12 | Memory Pipeline |
 | RAG Q&A | 🔲 Day 12 | Memory Pipeline |
 | Enrichment (auto-tag, summary) | 🔲 Day 13 | Memory Pipeline |
 | Entity Extraction (Knowledge Graph) | 🔲 Day 13 | Enrichment |

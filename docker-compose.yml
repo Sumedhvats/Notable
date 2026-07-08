@@ -12,12 +12,15 @@ services:
     environment:
       # Override .env to point at the compose MongoDB service
       MONGODB_URL: mongodb://mongo:27017/notable
+      REDIS_URL: redis://redis:6379
     volumes:
       # Hot-reload: mount source code into the container
       - ./backend/src:/app/src
       - ./backend/package.json:/app/package.json
     depends_on:
       mongo:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     restart: unless-stopped
 
@@ -35,6 +38,19 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    restart: unless-stopped
+
+  # --- Redis (BullMQ job queue) ---
+  redis:
+    image: redis:7-alpine
+    container_name: notable-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
     restart: unless-stopped
 
 volumes:

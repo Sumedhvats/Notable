@@ -727,17 +727,28 @@ gantt
 - [ ] Test with real scraped content from Day 4-5
 - [ ] **Checkpoint**: Long article produces sensible, overlapping chunks
 
-#### Day 7 — Buffer / Debug Day
+#### Day 7 — Redis + BullMQ + Buffer
 - [ ] Fix any issues from Days 1-6
 - [ ] Sign up for Voyage AI + Pinecone + Groq accounts
 - [ ] Create Pinecone index `notable` (512 dimensions, cosine metric)
 - [ ] Add API keys to `.env`
-- [ ] Write integration test: scrape → chunk → verify output pipeline
-- [ ] **Checkpoint**: All Day 1-6 code is solid, API keys ready for Week 2
+- [ ] Add Redis service to `docker-compose.yml` (port 6379, healthcheck)
+- [ ] Install `bullmq` + `ioredis` npm packages
+- [ ] Create `src/config/queue.ts`:
+  - Init `ioredis` connection (`REDIS_URL` env var, fallback `localhost:6379`)
+  - Create BullMQ queue: `memoryQueue` (memory creation jobs)
+  - Create BullMQ queue: `enrichmentQueue` (enrichment-only jobs for re-scrapes)
+  - Configure default job options: `{ attempts: 3, backoff: { type: 'exponential', delay: 2000 } }`
+- [ ] Create `src/workers/memory.worker.ts` (skeleton — full pipeline in Day 11):
+  - Init worker that connects to `memoryQueue`
+  - Process function placeholder: `async (job) => { /* Day 11 */ }`
+- [ ] Add `REDIS_URL` to `.env`
+- [ ] Write basic test: enqueue a job → worker picks it up → job completes
+- [ ] **Checkpoint**: Redis running, BullMQ configured, worker skeleton starts, jobs flow through
 
 ---
 
-### Week 2: RAG Pipeline + Core API (Days 8-14)
+### Week 2: RAG Pipeline + BullMQ + Core API (Days 8-14)
 
 #### Day 8 — Embedding Service
 - [ ] Create `src/services/embedding.service.ts`
@@ -763,26 +774,41 @@ gantt
 - [ ] Test full lifecycle: upsert → query → delete → verify gone
 - [ ] **Checkpoint**: All Pinecone operations work, cleanup is reliable
 
-#### Day 11 — Memory Controller: Create Pipeline
-- [ ] Create `src/models/memory.model.ts` with status field + compound unique index
+#### Day 11 — Memory Controller: Async Pipeline with BullMQ
+- [ ] Create `src/models/memory.model.ts` with fields: `url`, `title`, `description`, `contentType`, `source`, `metadata`, `tags`, `entities`, `summary`, `chunkCount`, `status` (`pending | processing | ready | failed`), `errorMessage`, `jobId`
 - [ ] Create `src/routes/memory.routes.ts` + `src/controllers/memory.controller.ts`
-- [ ] Implement `createFromUrl`:
+- [ ] Implement `createFromUrl` (async — returns immediately):
   1. Check duplicate URL → return existing if found
   2. Create Memory doc with `status: 'pending'`
-  3. Scrape URL → update to `status: 'processing'`
-  4. Chunk → Embed → Upsert to Pinecone
-  5. Update Memory doc → `status: 'ready'`, set chunkCount
-  6. On failure → `status: 'failed'`, set errorMessage
-- [ ] Implement `createFromExtension` (same pipeline, skip scraping)
-- [ ] **Checkpoint**: `POST /memories` with Wikipedia URL → memory created, vectors stored, status = ready
+  3. Enqueue BullMQ job: `{ memoryId, url, mode: 'web' }`
+  4. Return `202 Accepted` with `{ memoryId, status: 'pending' }`
+- [ ] Implement `createFromExtension` (same, skip scraping — sends content directly):
+  1. Create Memory doc with `status: 'pending'`
+  2. Enqueue BullMQ job: `{ memoryId, content, mode: 'extension' }`
+  3. Return `202 Accepted`
+- [ ] Implement `GET /memories/:id/status` — lightweight endpoint returning just `{ status, errorMessage }` (for frontend polling)
+- [ ] **Implement the worker** (`src/workers/memory.worker.ts` process function):
+  1. Receive job with `{ memoryId, url, content, mode }`
+  2. Update Memory: `status: 'processing'`
+  3. If `mode === 'web'`: `scrape(url)` → get content
+  4. If `mode === 'extension'`: use provided content directly
+  5. `chunker.chunk(content)` → array of chunks
+  6. `embedder.embed(chunks)` → array of vectors (batched, 128 per req)
+  7. `vectorStore.upsertChunks(userId, memoryId, chunks, vectors)` → Pinecone
+  8. Update Memory: `status: 'ready'`, `chunkCount`, store title/metadata
+  9. On any error: `status: 'failed'`, `errorMessage`, log error
+  10. Job retries automatically on failure (BullMQ: 3 attempts, exponential backoff)
+- [ ] Wire worker into `src/index.ts` (start worker alongside Express)
+- [ ] **Checkpoint**: `POST /memories` returns 202 immediately → poll `/status` → eventually `ready`. Pipeline survives transient API failures via retries.
 
-#### Day 12 — Memory Controller: CRUD + QA Service
-- [ ] Implement `list` (paginated), `get`, `delete` (+ Pinecone cleanup)
-- [ ] Implement `rescrape` — re-run pipeline for existing memory
+#### Day 12 — Memory Controller: CRUD + QA Service + Status Polling
+- [ ] Implement `list` (paginated), `get`, `delete` (+ Pinecone cleanup via `vectorStore.deleteByMemory`)
+- [ ] Implement `rescrape` — re-run pipeline: update status → `pending`, enqueue new BullMQ job
+- [ ] Implement `GET /memories/:id/status` polling endpoint (returns `{ status, errorMessage }`)
 - [ ] Create `src/services/qa.service.ts`
-- [ ] Implement RAG Q&A: embed question → Pinecone query → Groq prompt → answer
+- [ ] Implement RAG Q&A (synchronous — fast enough): embed question → Pinecone query → Groq prompt → answer with source citations
 - [ ] Create `src/routes/ask.routes.ts` + `src/controllers/ask.controller.ts`
-- [ ] **Checkpoint**: Save 2 URLs, ask a question, get a relevant answer with sources
+- [ ] **Checkpoint**: Save 2 URLs (202 → poll → ready), ask a question, get a relevant answer with sources
 
 #### Day 13 — Enrichment Service + Knowledge Graph + Search
 - [ ] Create `src/services/enrichment.service.ts`
@@ -790,7 +816,11 @@ gantt
 - [ ] Implement auto-summary (Groq call)
 - [ ] **Feature: Entity extraction** — extract notable entities (people, places, concepts) via Groq, store as `entities[]` on Memory model
 - [ ] Implement `GET /memories/:id/graph` — return entities + relationships for knowledge graph
-- [ ] Hook enrichment into memory creation pipeline (after embedding, before `status: 'ready'`)
+- [ ] Hook enrichment into memory creation pipeline via BullMQ job chaining:
+  - After main pipeline completes → enqueue enrichment job to `enrichmentQueue`
+  - Worker processes enrichment asynchronously (tags, summary, entities)
+  - On completion → `status: 'ready'`, set tags/summary/entities
+  - Enrichment job has lower priority and can be retried independently
 - [ ] Implement `search` endpoint — MongoDB text index on title/description/tags
 - [ ] Implement filters: `?type=&tags=&entities=&from=&to=&sort=`
 - [ ] Store entity co-occurrence edges (entity A ↔ entity B when they appear in same memory)
@@ -980,8 +1010,8 @@ gantt
 
 | Week | Days | Focus | Key Deliverable |
 |---|---|---|---|
-| **1** | 1-7 | Backend Foundation | Express + OAuth + Scraper + Chunker |
-| **2** | 8-14 | RAG Pipeline | Embedding + Pinecone + Memory CRUD + Q&A + Enrichment + Collections |
+| **1** | 1-7 | Backend Foundation | Express + OAuth + Scraper + Chunker + Redis + BullMQ |
+| **2** | 8-14 | RAG Pipeline | Embedding + Pinecone + Async Memory Pipeline + Q&A + Enrichment + Collections |
 | **3** | 15-21 | Chrome Extension | Content extraction + bookmark listener + auth + popup |
 | **4** | 22-28 | React Frontend | Dashboard + save URL + chat Q&A + collections + responsive |
 | **Launch** | 29-30 | Ship It | Integration testing + deploy + README |
