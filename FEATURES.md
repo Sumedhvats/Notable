@@ -157,7 +157,7 @@
 - **Cannot extract logged-out content** — only works as the currently logged-in user on the page.
 - **YouTube extension extraction** is limited to what's visible in the DOM (comments must be expanded, transcript must be opened).
 - **No offline queue** — if the API is unreachable, the save is lost.
-- **No sync across devices** — each browser instance saves independently.
+- **No cross-device auth sync** — JWT is stored per browser instance. Must log in on each device.
 
 ---
 
