@@ -1,41 +1,41 @@
-import type { Request, Response, NextFunction } from 'express';
-import jwt from 'jsonwebtoken';
-import logger from '../utils/logger.js';
+import type { Request, Response, NextFunction } from "express";
+import { fromNodeHeaders } from "better-auth/node";
+import { getAuth } from "../lib/auth.js";
 
 export interface AuthenticatedRequest extends Request {
   userId?: string;
+  userRole?: string;
+  session?: {
+    user: {
+      id: string;
+      email: string;
+      name: string;
+      role: string;
+    };
+  };
 }
 
-export function requireAuth(
+export async function requireAuth(
   req: AuthenticatedRequest,
   res: Response,
   next: NextFunction
-): void {
-  const authHeader = req.headers.authorization;
-
-  if (!authHeader?.startsWith('Bearer ')) {
-    res.status(401).json({ error: 'Missing or invalid Authorization header' });
-    return;
-  }
-
-  const token = authHeader.split(' ')[1];
-  const secret = process.env.JWT_SECRET;
-
-  if (!secret) {
-    logger.error('JWT_SECRET not configured');
-    res.status(500).json({ error: 'Server configuration error' });
-    return;
-  }
-
+): Promise<void> {
   try {
-    const decoded = jwt.verify(token, secret) as { userId: string };
-    req.userId = decoded.userId;
-    next();
-  } catch (err) {
-    if (err instanceof jwt.TokenExpiredError) {
-      res.status(401).json({ error: 'Token expired' });
+    const auth = getAuth();
+    const session = await auth.api.getSession({
+      headers: fromNodeHeaders(req.headers),
+    });
+
+    if (!session) {
+      res.status(401).json({ error: "Unauthorized" });
       return;
     }
-    res.status(401).json({ error: 'Invalid token' });
+
+    req.userId = session.user.id;
+    req.userRole = (session.user as any).role || "paid";
+    req.session = session as any;
+    next();
+  } catch (err) {
+    res.status(500).json({ error: "Authentication failed" });
   }
 }

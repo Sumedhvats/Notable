@@ -1,46 +1,51 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
-import session from 'express-session';
-import passport from 'passport';
 import mongoose from 'mongoose';
+import { v4 as uuid } from 'uuid';
+import { toNodeHandler } from 'better-auth/node';
 
 import logger from './utils/logger.js';
-import { configurePassport } from './config/passport.js';
-import authRoutes from './routes/auth.routes.js';
+import { initAuth, closeAuth } from './lib/auth.js';
+import { defaultLimiter } from './middleware/rateLimit.middleware.js';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+
+const REQUEST_TIMEOUT_MS = parseInt(process.env.REQUEST_TIMEOUT_MS || '30000', 10);
 
 app.use(cors({
   origin: process.env.FRONTEND_URL || 'http://localhost:5173',
   credentials: true,
 }));
 
+app.use(defaultLimiter);
+
+app.use((req, _res, next) => {
+  const requestId = (req.headers['x-request-id'] as string) || uuid();
+  req.headers['x-request-id'] = requestId;
+  next();
+});
+
+app.use((req, res, next) => {
+  const timer = setTimeout(() => {
+    res.status(503).json({ error: 'Request timeout' });
+  }, REQUEST_TIMEOUT_MS);
+  res.on('finish', () => clearTimeout(timer));
+  next();
+});
+
+// Better Auth handler must be mounted BEFORE body parsers consume the stream
+// Use a placeholder; the real auth handler gets mounted in start()
+let _authHandler: any = null;
+app.all('/api/auth/*', (req, res, next) => {
+  if (_authHandler) return _authHandler(req, res);
+  next();
+});
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// Sessions — needed for Passport OAuth handshake (transient, not for auth state)
-app.use(session({
-  secret: process.env.SESSION_SECRET || 'dev-secret-change-me',
-  resave: false,
-  saveUninitialized: false,
-  cookie: {
-    secure: process.env.NODE_ENV === 'production',
-    maxAge: 10 * 60 * 1000, // 10 min — only used during OAuth flow
-  },
-}));
-
-// Passport
-configurePassport();
-app.use(passport.initialize());
-app.use(passport.session());
-
-// ---------------------------------------------------------------------------
-// Routes
-// ---------------------------------------------------------------------------
-
-// Health check
 app.get('/health', (_req, res) => {
   res.json({
     status: 'ok',
@@ -49,40 +54,53 @@ app.get('/health', (_req, res) => {
   });
 });
 
-// Auth
-app.use('/api/v1/auth', authRoutes);
-
-// ---------------------------------------------------------------------------
-// Global Error Handler
-// ---------------------------------------------------------------------------
-
-app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  logger.error('Unhandled error:', err.message);
-  res.status(500).json({
-    error: 'Internal server error',
-    message: process.env.NODE_ENV === 'production' ? undefined : err.message,
+async function gracefulShutdown(signal: string) {
+  logger.info(`${signal} received — starting graceful shutdown`);
+  server.close(async () => {
+    logger.info('HTTP server closed');
+    try {
+      await closeAuth();
+      logger.info('Auth client closed');
+    } catch (err) {
+      logger.error('Error closing auth client:', err);
+    }
+    try {
+      await mongoose.disconnect();
+      logger.info('MongoDB disconnected');
+    } catch (err) {
+      logger.error('Error disconnecting MongoDB:', err);
+    }
+    process.exit(0);
   });
-});
+  setTimeout(() => {
+    logger.error('Graceful shutdown timeout — forcing exit');
+    process.exit(1);
+  }, 10000);
+}
 
-// ---------------------------------------------------------------------------
-// Start
-// ---------------------------------------------------------------------------
+let server: ReturnType<typeof app.listen>;
 
 const start = async () => {
   try {
-    // Connect to MongoDB
     const mongoUrl = process.env.MONGODB_URL;
     if (!mongoUrl || !mongoUrl.startsWith('mongodb')) {
       logger.warn('MONGODB_URL not set or invalid — running without database');
     } else {
-      await mongoose.connect(mongoUrl);
-      logger.success(`Connected to MongoDB`);
+      await mongoose.connect(mongoUrl, { serverSelectionTimeoutMS: 5000 });
+      logger.success('Connected to MongoDB');
+
+      const auth = initAuth();
+      logger.success('Better Auth initialized');
+      _authHandler = toNodeHandler(auth);
     }
 
-    app.listen(PORT, () => {
+    server = app.listen(PORT, () => {
       logger.success(`Server running on http://localhost:${PORT}`);
       logger.info(`Health check: http://localhost:${PORT}/health`);
     });
+
+    process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+    process.on('SIGINT', () => gracefulShutdown('SIGINT'));
   } catch (error) {
     logger.error('Failed to start server:', error);
     process.exit(1);
@@ -90,5 +108,14 @@ const start = async () => {
 };
 
 start();
+
+// Error handler must be LAST in the middleware stack
+app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  logger.error('Unhandled error:', err.message);
+  res.status(500).json({
+    error: 'Internal server error',
+    message: process.env.NODE_ENV === 'production' ? undefined : err.message,
+  });
+});
 
 export default app;

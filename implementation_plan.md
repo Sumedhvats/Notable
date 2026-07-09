@@ -1,4 +1,4 @@
-# Notable v2 — AI-Powered Bookmarks with RAG
+# Notable — AI-Powered Bookmarks with RAG
 
 Rebuild Notable into an AI-powered "memories" system. Two equal ingestion modes: **Web app** (user pastes a URL → backend scrapes content) and **Chrome extension** (reads rendered page DOM client-side → sends to backend). Both paths chunk, embed, and store content in a vector DB for natural language Q&A.
 
@@ -34,8 +34,8 @@ Rebuild Notable into an AI-powered "memories" system. Two equal ingestion modes:
 |---|---|---|
 | **Runtime** | Node.js + TypeScript | Free |
 | **Framework** | Express.js | Free |
-| **Auth** | OAuth 2.0 (Google) via Passport.js + JWT | Free |
-| **Database** | MongoDB + Mongoose | Free (Atlas) |
+| **Auth** | Better Auth (Google + GitHub OAuth, sessions, roles) | Free |
+| **Database** | MongoDB + Mongoose (+ Better Auth MongoClient) | Free (Atlas) |
 | **Vector Store** | Pinecone (serverless, free tier) | Free (2GB) |
 | **Embeddings** | Voyage AI API (`voyage-3-lite`) | Free (200M tokens) |
 | **LLM Q&A** | Groq SDK (`llama-3.3-70b-versatile`) | Free tier |
@@ -48,12 +48,12 @@ Rebuild Notable into an AI-powered "memories" system. Two equal ingestion modes:
 ## User Review Required
 
 > [!IMPORTANT]
-> **Full rebuild**: Nukes existing `backend/src/` code and rebuilds from scratch.
+> **Incremental build on existing foundation**: Days 1–5 are complete. Auth (better-auth), scraper (10+ site extractors), middleware (rate limiting, validation, auth guard), and project scaffolding are already built and tested. The plan continues from Day 6 onward.
 
 > [!IMPORTANT]
 > **API keys needed** (all free, no credit card):
-> - **Google OAuth** — [console.cloud.google.com](https://console.cloud.google.com) (create OAuth 2.0 credentials)
-> - **GitHub OAuth** — [github.com/settings/developers](https://github.com/settings/developers) (create OAuth App)
+> - **Google OAuth** — [console.cloud.google.com](https://console.cloud.google.com) (create OAuth 2.0 credentials) ✅ Done
+> - **GitHub OAuth** — [github.com/settings/developers](https://github.com/settings/developers) (create OAuth App) ✅ Done
 > - **Groq** — [console.groq.com](https://console.groq.com)
 > - **Voyage AI** — [dash.voyageai.com](https://dash.voyageai.com)
 > - **Pinecone** — [app.pinecone.io](https://app.pinecone.io)
@@ -66,77 +66,60 @@ Rebuild Notable into an AI-powered "memories" system. Two equal ingestion modes:
 
 ---
 
-### Project Setup
+### Project Setup (✅ Complete — Days 1-5)
 
-#### [DELETE] All files in `backend/src/`
+> [!NOTE]
+> The following setup steps were completed in Days 1–5. Listed here for reference.
 
-Delete existing source: `Routes/`, `controllers/`, `models/`, `middleware/`, `index.ts`, `utils.ts`
+#### [EXISTING] [package.json](file:///home/sumedh/Code/Notable/backend/package.json)
 
-#### [MODIFY] [package.json](file:///home/sumedh/Code/Notable/backend/package.json)
-
+Current dependencies (already installed):
 ```json
 {
-  "name": "notable-backend",
-  "version": "2.0.0",
-  "type": "module",
-  "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "build": "tsc",
-    "start": "node dist/index.js"
-  },
   "dependencies": {
     "express": "^4.21.2",
     "mongoose": "^8.13.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
-
-    "jsonwebtoken": "^9.0.2",
-    "zod": "^3.24.2",
-    "passport": "^0.7.0",
-    "passport-google-oauth20": "^2.0.0",
-    "passport-github2": "^0.1.12",
-    "express-session": "^1.18.0",
+    "better-auth": "^1.6.23",
+    "@better-auth/mongo-adapter": "^1.6.23",
+    "zod": "^4.4.3",
+    "express-rate-limit": "^8.5.2",
     "groq-sdk": "latest",
-    "youtube-transcript": "^2.0.0",
+    "youtube-transcript": "^1.3.1",
     "@pinecone-database/pinecone": "latest",
     "axios": "^1.8.4",
     "cheerio": "^1.0.0",
     "@mozilla/readability": "^0.5.0",
     "jsdom": "^25.0.0",
     "uuid": "^11.0.0"
-  },
-  "devDependencies": {
-    "typescript": "~5.7.2",
-    "@types/express": "^5.0.1",
-
-    "@types/jsonwebtoken": "^9.0.9",
-    "@types/passport": "^1.0.17",
-    "@types/passport-google-oauth20": "^2.0.16",
-    "@types/passport-github2": "^1.2.9",
-    "@types/express-session": "^1.18.0",
-    "@types/jsdom": "^21.1.7",
-    "@types/uuid": "^10.0.0",
-    "tsx": "^4.19.0"
   }
 }
 ```
 
-#### [NEW] `backend/tsconfig.json`
+**Still to install** (Day 6-7): `bullmq`, `ioredis`
+
+#### [EXISTING] `backend/tsconfig.json`
 - `target: ES2022`, `module: NodeNext`, `moduleResolution: NodeNext`
 - `strict: true`, `outDir: ./dist`, `rootDir: ./src`
 
-#### [MODIFY] [.env](file:///home/sumedh/Code/Notable/backend/.env)
+#### [EXISTING] [.env](file:///home/sumedh/Code/Notable/backend/.env)
 ```env
 PORT=5000
 MONGODB_URL=<your-mongodb-uri>
-JWT_SECRET=<your-jwt-secret>
-SESSION_SECRET=<random-string>
+BETTER_AUTH_SECRET=<random-string>      # Used by better-auth for session signing
+BETTER_AUTH_URL=http://localhost:5000   # Base URL for auth callbacks
+FRONTEND_URL=http://localhost:5173     # CORS origin + OAuth redirect target
 GOOGLE_CLIENT_ID=<from-google-cloud-console>
 GOOGLE_CLIENT_SECRET=<from-google-cloud-console>
-GOOGLE_CALLBACK_URL=http://localhost:5000/api/v1/auth/google/callback
 GITHUB_CLIENT_ID=<from-github-developer-settings>
 GITHUB_CLIENT_SECRET=<from-github-developer-settings>
-GITHUB_CALLBACK_URL=http://localhost:5000/api/v1/auth/github/callback
+ADMIN_EMAILS=<comma-separated-admin-emails>
+REQUEST_TIMEOUT_MS=30000
+RATE_LIMIT_WINDOW_MS=60000
+RATE_LIMIT_MAX=30
+# To add in Day 7:
+REDIS_URL=redis://localhost:6379
 GROQ_API_KEY=<from-console.groq.com>
 VOYAGE_API_KEY=<from-dash.voyageai.com>
 PINECONE_API_KEY=<from-app.pinecone.io>
@@ -145,44 +128,38 @@ PINECONE_INDEX_NAME=notable
 
 ---
 
-### Authentication (Google + GitHub OAuth 2.0 + JWT)
+### Authentication — Better Auth (✅ Complete)
 
-#### [NEW] `backend/src/models/user.model.ts`
-```typescript
-{
-  provider: 'google' | 'github';  // Which OAuth provider
-  providerId: string;              // Google sub ID or GitHub user ID
-  email: string;                   // From OAuth profile
-  name: string;                    // Display name
-  avatar: string;                  // Profile picture URL
-  createdAt: Date;
-}
+Auth is handled by [better-auth](https://www.better-auth.com/) — **not** Passport.js. Better Auth manages its own user/session tables in MongoDB via a separate `MongoClient`.
+
+#### [EXISTING] `backend/src/lib/auth.ts`
+- Initializes `betterAuth()` with MongoDB adapter (separate `MongoClient` connection)
+- Social providers: **Google** + **GitHub** (configured via env vars)
+- Email/password also enabled as a fallback
+- Role system: `databaseHooks.user.create.before` assigns `'admin'` role if email is in `ADMIN_EMAILS`, otherwise `'paid'`
+- Exports: `initAuth()`, `getAuth()`, `closeAuth()`
+
+#### Auth flow (implemented):
 ```
+Browser → GET /api/auth/sign-in/social?provider=google
+       → Google consent → callback → better-auth creates session
+       → Redirect to FRONTEND_URL with session cookie
+```
+
 > [!NOTE]
-> No password field — pure OAuth. The backend issues its own JWT after OAuth succeeds. Both extension and frontend use this JWT for all subsequent API calls.
+> Better Auth uses its **own session/token model** (not hand-rolled JWT). The `requireAuth` middleware in `auth.middleware.ts` validates the better-auth session and extracts `userId` + `userRole`. The extension will use the same session-based auth.
 
-#### [NEW] `backend/src/config/passport.ts`
-- Configure **two** Passport strategies:
-  - `passport-google-oauth20` — scopes: `['profile', 'email']`
-  - `passport-github2` — scopes: `['user:email']`
-- Both callbacks: find user by `{ provider, providerId }` or create new → issue JWT
+#### [EXISTING] `backend/src/middleware/auth.middleware.ts`
+- `requireAuth`: Extracts Bearer token → verifies via better-auth → attaches `req.userId` + `req.userRole`
 
-#### [NEW] `backend/src/routes/auth.routes.ts`
-| Method | Endpoint | Description |
-|---|---|---|
-| GET | `/api/v1/auth/google` | Initiate Google OAuth flow |
-| GET | `/api/v1/auth/google/callback` | Google redirects here → issue JWT |
-| GET | `/api/v1/auth/github` | Initiate GitHub OAuth flow |
-| GET | `/api/v1/auth/github/callback` | GitHub redirects here → issue JWT |
-| GET | `/api/v1/auth/me` | Get current user from JWT |
+#### [EXISTING] `backend/src/middleware/authorize.middleware.ts`
+- `authorize('admin')`: Role-based guard, returns 403 if insufficient
 
-#### [NEW] `backend/src/controllers/auth.controller.ts`
-- Google callback handler: find/create user → sign JWT → redirect with token
-- `me` endpoint: decode JWT, return user profile
+#### [EXISTING] `backend/src/middleware/rateLimit.middleware.ts`
+- 4 tiers: `defaultLimiter` (30/min), `authLimiter` (10/min), `publicLimiter` (60/min), `askLimiter` (5/min)
 
-#### [NEW] `backend/src/middleware/auth.middleware.ts`
-- Verify JWT from `Authorization: Bearer <token>` header
-- Attach `userId` to request
+#### [EXISTING] `backend/src/middleware/validate.middleware.ts`
+- Zod validation factory for `body`/`query`/`params`
 
 ---
 
@@ -191,7 +168,7 @@ PINECONE_INDEX_NAME=notable
 #### [NEW] `backend/src/models/memory.model.ts`
 
 > [!TIP]
-> **Lean by design** — no full text stored in MongoDB. Chunk text lives only in Pinecone vector metadata. MongoDB holds just enough for listing/displaying memories.
+> **Lean with backup** — MongoDB stores display metadata (title, URL, tags) and chunk text for re-embedding safety. Pinecone stores vectors + chunk text in metadata for retrieval. Raw HTML is discarded.
 
 ```typescript
 {
@@ -229,26 +206,51 @@ PINECONE_INDEX_NAME=notable
 }
 ```
 
+#### [NEW] `backend/src/models/chunk.model.ts`
+
+> [!IMPORTANT]
+> **Chunk backup in MongoDB** — chunk text is stored in MongoDB as a safety net. This enables re-embedding if the embedding model changes, backup/restore without depending on Pinecone, and debugging RAG quality. Negligible storage cost compared to the risk of permanent data loss.
+
+```typescript
+{
+  memoryId: ObjectId;          // Parent memory
+  userId: ObjectId;            // Owner (denormalized for fast queries)
+  chunkIndex: number;          // 0, 1, 2, ...
+  text: string;                // The chunk text (~500 tokens)
+  createdAt: Date;
+}
+```
+> [!NOTE]
+> Compound index: `{ memoryId, chunkIndex }` for ordered retrieval. Index on `{ userId }` for bulk operations. When a memory is deleted, all its chunks are cascade-deleted.
+
 ---
 
 ### RAG Pipeline Services
 
-#### [NEW] `backend/src/services/scraper.service.ts`
+#### [EXISTING] `backend/src/services/scraper.service.ts` (✅ Complete — 1458 lines)
 - **Used for web app URL submissions** — user pastes a URL on the site, backend scrapes it
 - **Extracts ONLY the core content** — no replies, likes, engagement metrics, sidebar, navigation
-- **Site-specific strategies**:
+- **10+ site-specific extractors** already implemented:
 
 | Site | Server Strategy | What's Extracted |
 |---|---|---|
-| **Reddit** | Append `.json` to URL → parse JSON response → `data.children[0].data.selftext` + `title` | Post title + body text only. No comments, no votes. |
-| **YouTube** | `youtube-transcript` package → captions, **capped at first ~5 minutes** | Video title + description + first 5 min of transcript |
+| **Reddit** | Append `.json` to URL → parse JSON response | Post title + body text only. No comments, no votes. |
+| **YouTube** | `youtube-transcript` package → captions, capped | Video title + description + transcript |
+| **Wikipedia** | MediaWiki API → parsed content | Article body text |
+| **Hacker News** | HN API → item data | Post title + text/URL |
+| **StackOverflow** | StackExchange API → Q&A | Question + top answer |
+| **GitHub** | GitHub API → repo/file content | README, file contents, repo description |
+| **arXiv** | arXiv API → paper metadata | Title + abstract |
+| **DOI/Crossref** | Crossref API → paper metadata | Title + abstract |
 | **Generic / Blogs** | `axios` → `jsdom + @mozilla/readability` → article text | Article body text only. Readability strips nav/ads/footer. |
-| **Twitter/X** | ❌ Won't work server-side (JS-rendered) | Falls back to `status: 'failed'` with message "Use the extension for this site" |
+| **Fallback** | Cheerio → Jina AI (r.jina.ai) | Cleaned text from any page |
+| **Twitter/X** | ❌ Won't work server-side (JS-rendered) | Returns `UNSUPPORTED_SITE` with extension suggestion |
 | **LinkedIn** | ❌ Won't work server-side (auth required) | Same fallback |
 
-- Cheerio fallback for non-article pages that Readability can't parse
+- Bot-challenge detection (34 patterns: Cloudflare, Akamai, Datadome, etc.) before extraction
+- 3-tier fallback: Readability → Cheerio → Jina AI
 - Returns: `{ title, content, description, metadata }`
-- Content is passed to chunker → embedder → Pinecone, then **discarded** (not stored in MongoDB)
+- Content is passed to chunker → embedder → Pinecone + **backed up to MongoDB chunks collection**
 
 #### [NEW] `backend/src/services/chunker.service.ts`
 - Input: text string → Output: `Array<{ text, index }>`
@@ -274,12 +276,24 @@ PINECONE_INDEX_NAME=notable
 
 #### [NEW] `backend/src/services/qa.service.ts`
 - Input: `{ question, userId }`
-- Flow:
+- **Supports two modes**: streaming (SSE) and non-streaming (fallback)
+
+**Streaming mode (primary — used by frontend chat UI):**
   1. Embed question via Voyage AI
   2. Query Pinecone for top-5 chunks
   3. Build prompt with context + question
-  4. Call Groq (`llama-3.3-70b-versatile`)
-  5. Return `{ answer, sources[] }`
+  4. Call Groq with `stream: true` → returns async iterable of token chunks
+  5. Yield each token chunk as SSE `data:` event
+  6. Final SSE event includes `sources[]` (memory titles + URLs + scores)
+
+**Non-streaming mode (fallback — for simple API consumers / extension):**
+  1. Same steps 1-3
+  2. Call Groq with `stream: false` → wait for full response
+  3. Return `{ answer, sources[] }`
+
+> [!TIP]
+> **Why SSE over WebSocket?** SSE is simpler (standard HTTP, auto-reconnect, works through proxies), one-directional (server→client, which is all we need for streaming answers), and natively supported by `EventSource` in browsers. WebSocket is overkill for a request-response Q&A pattern.
+
 - Server load: zero (three API calls)
 
 #### [NEW] `backend/src/services/enrichment.service.ts`
@@ -330,20 +344,33 @@ PINECONE_INDEX_NAME=notable
 #### [NEW] `backend/src/routes/ask.routes.ts`
 | Method | Endpoint | Description |
 |---|---|---|
-| POST | `/api/v1/ask` | Ask a question across all memories |
+| POST | `/api/v1/ask` | Ask a question — non-streaming (returns full JSON response) |
+| POST | `/api/v1/ask/stream` | Ask a question — SSE streaming (streams tokens in real-time) |
 
 #### [NEW] `backend/src/controllers/ask.controller.ts`
-- `{ question }` → QA service → `{ answer, sources[] }`
+- `ask`: `{ question }` → QA service (non-streaming) → `{ answer, sources[] }`
+- `askStream`: `{ question }` → sets `Content-Type: text/event-stream` → QA service streams tokens via SSE → final event has `sources[]`
+
+**SSE response format:**
+```
+data: {"type":"token","content":"The"}
+data: {"type":"token","content":" article"}
+data: {"type":"token","content":" discusses"}
+...
+data: {"type":"sources","sources":[{"title":"...","url":"...","score":0.92}]}
+data: {"type":"done"}
+```
 
 ---
 
 ### Entry Point
 
-#### [NEW] `backend/src/index.ts`
-- Express app setup (CORS, JSON, sessions)
-- Passport initialization
-- MongoDB connection
-- Mount routes: auth, memories, ask
+#### [EXISTING] `backend/src/index.ts` (✅ Complete)
+- Express app setup (CORS, JSON, rate limiting, request timeout, X-Request-Id)
+- Better Auth handler mounted at `/api/auth/*` (before body parsers)
+- Mongoose + Better Auth MongoClient connections
+- Graceful shutdown: `closeAuth()` → `mongoose.disconnect()` → exit (properly awaited)
+- Mount routes: auth (done), memories (Day 11), collections (Day 14), ask (Day 12)
 - Error handler
 - **No model loading** — all ML is cloud-based
 
@@ -354,34 +381,44 @@ PINECONE_INDEX_NAME=notable
 ```
 backend/
 ├── src/
-│   ├── index.ts
+│   ├── index.ts                        # ✅ Express app, better-auth, graceful shutdown
+│   ├── lib/
+│   │   └── auth.ts                     # ✅ Better Auth init (Google + GitHub OAuth)
 │   ├── config/
-│   │   └── passport.ts              # Google + GitHub OAuth strategies
+│   │   └── queue.ts                    # BullMQ queues + Redis connection
 │   ├── models/
-│   │   ├── user.model.ts
 │   │   ├── memory.model.ts
+│   │   ├── chunk.model.ts              # Chunk text backup (for re-embedding)
 │   │   └── collection.model.ts
 │   ├── services/
-│   │   ├── scraper.service.ts       # URL → text (+ YouTube transcript)
-│   │   ├── chunker.service.ts       # Text → chunks
-│   │   ├── embedding.service.ts     # Voyage AI REST API
-│   │   ├── vector-store.service.ts  # Pinecone API
-│   │   ├── enrichment.service.ts    # Auto-tagging + auto-summary (Groq)
-│   │   └── qa.service.ts            # RAG Q&A (Groq)
+│   │   ├── scraper.service.ts          # ✅ URL → text (10+ site extractors)
+│   │   ├── chunker.service.ts          # Text → chunks
+│   │   ├── embedding.service.ts        # Voyage AI REST API
+│   │   ├── vector-store.service.ts     # Pinecone API
+│   │   ├── enrichment.service.ts       # Auto-tagging + auto-summary (Groq)
+│   │   └── qa.service.ts               # RAG Q&A with SSE streaming (Groq)
 │   ├── controllers/
-│   │   ├── auth.controller.ts
 │   │   ├── memory.controller.ts
 │   │   ├── collection.controller.ts
 │   │   └── ask.controller.ts
 │   ├── routes/
-│   │   ├── auth.routes.ts
 │   │   ├── memory.routes.ts
 │   │   ├── collection.routes.ts
 │   │   └── ask.routes.ts
+│   ├── workers/
+│   │   └── memory.worker.ts            # BullMQ worker for async pipeline
 │   ├── middleware/
-│   │   └── auth.middleware.ts
+│   │   ├── auth.middleware.ts           # ✅ requireAuth (better-auth session)
+│   │   ├── authorize.middleware.ts      # ✅ Role-based guard
+│   │   ├── rateLimit.middleware.ts      # ✅ 4-tier rate limiting
+│   │   └── validate.middleware.ts       # ✅ Zod validation
+│   ├── schemas/
+│   │   └── memory.schema.ts            # Zod validation schemas
+│   ├── tests/
+│   │   ├── scraper.test.ts             # ✅ Scraper tests
+│   │   └── scraper-fallback.test.ts    # ✅ Fallback tests
 │   └── utils/
-│       └── logger.ts
+│       └── logger.ts                   # ✅ Console logger
 ├── package.json
 ├── tsconfig.json
 └── .env
@@ -635,7 +672,7 @@ curl -X POST http://localhost:5000/api/v1/ask \
 
 ```mermaid
 gantt
-    title Notable v2 — 30 Day Plan
+    title Notable — 30 Day Plan
     dateFormat  YYYY-MM-DD
     axisFormat  %b %d
 
