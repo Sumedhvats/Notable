@@ -2,7 +2,7 @@
  * Stage 1 Integration Tests — Embedding + Vector Store
  *
  * Requires real API keys in .env:
- *   VOYAGE_API_KEY, PINECONE_API_KEY, PINECONE_INDEX_NAME, MONGODB_URL
+ *   JINA_API_KEY, PINECONE_API_KEY, PINECONE_INDEX_NAME, MONGODB_URL
  *
  * Also requires the Pinecone index to exist (512 dims, cosine metric).
  *
@@ -82,14 +82,24 @@ function printResults(): void {
 // =============================================================================
 
 const TEST_USER_ID = 'test-user-stage1';
-const TEST_MEMORY_ID = 'test-memory-stage1-' + Date.now();
-const EXPECTED_DIMS = parseInt(process.env.VOYAGE_DIMENSIONS ?? '512', 10);
+const TEST_MEMORY_ID = new mongoose.Types.ObjectId().toString();
+const EXPECTED_DIMS = parseInt(process.env.JINA_EMBEDDING_DIMENSIONS ?? '512', 10);
+
+// Connect to MongoDB before starting tests
+const mongoUrl = process.env.MONGODB_URL;
+if (!mongoUrl) {
+  console.error('❌ MONGODB_URL not set — skipping integration tests');
+  process.exit(1);
+}
+await mongoose.connect(mongoUrl, { serverSelectionTimeoutMS: 5000 });
 
 const TEST_CHUNKS = [
   { text: 'TypeScript is a strongly typed superset of JavaScript.', index: 0 },
   { text: 'It compiles down to plain JavaScript and runs anywhere JS runs.', index: 1 },
   { text: 'The TypeScript compiler catches type errors at compile time.', index: 2 },
 ];
+
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // =============================================================================
 // Embedding tests
@@ -128,7 +138,7 @@ await test('embed: semantically similar texts → high cosine similarity', async
   const mag2 = Math.sqrt(v2.reduce((s, x) => s + x * x, 0));
   const similarity = dot / (mag1 * mag2);
   info(`Cosine similarity: ${similarity.toFixed(4)}`);
-  assert(similarity > 0.85, `expected similarity > 0.85, got ${similarity.toFixed(4)}`);
+  assert(similarity > 0.80, `expected similarity > 0.80, got ${similarity.toFixed(4)}`);
 });
 
 await test('embed: semantically different texts → lower cosine similarity', async () => {
@@ -141,13 +151,12 @@ await test('embed: semantically different texts → lower cosine similarity', as
   const mag2 = Math.sqrt(v2.reduce((s, x) => s + x * x, 0));
   const similarity = dot / (mag1 * mag2);
   info(`Cosine similarity (unrelated): ${similarity.toFixed(4)}`);
-  // Similarity should be noticeably lower than related texts
   assert(similarity < 0.95, `expected similarity < 0.95 for unrelated texts, got ${similarity.toFixed(4)}`);
 });
 
 await test('embed: no API key → throws EmbeddingError', async () => {
-  const original = process.env.VOYAGE_API_KEY;
-  delete process.env.VOYAGE_API_KEY;
+  const original = process.env.JINA_API_KEY;
+  delete process.env.JINA_API_KEY;
   try {
     await embed(['test']);
     assert(false, 'should have thrown EmbeddingError');
@@ -155,7 +164,7 @@ await test('embed: no API key → throws EmbeddingError', async () => {
     assert(err instanceof EmbeddingError, `expected EmbeddingError, got ${(err as Error).name}`);
     info(`Error: ${(err as Error).message}`);
   } finally {
-    process.env.VOYAGE_API_KEY = original;
+    process.env.JINA_API_KEY = original;
   }
 });
 
@@ -164,11 +173,21 @@ await test('embed: no API key → throws EmbeddingError', async () => {
 // =============================================================================
 
 let testVectors: number[][] = [];
+let queryVector: number[] = [];
+let deleteVerifyVector: number[] = [];
 
-await test('vector store setup: embed test chunks', async () => {
-  testVectors = await embed(TEST_CHUNKS.map((c) => c.text));
+await test('vector store setup: embed test chunks and query text', async () => {
+  const allTexts = [
+    ...TEST_CHUNKS.map((c) => c.text),
+    'What language compiles to JavaScript?',
+    'TypeScript typed superset JavaScript compiler',
+  ];
+  const allVectors = await embed(allTexts);
+  testVectors = allVectors.slice(0, 3);
+  queryVector = allVectors[3];
+  deleteVerifyVector = allVectors[4];
   assert(testVectors.length === TEST_CHUNKS.length, 'should have one vector per chunk');
-  info(`Embedded ${testVectors.length} chunks`);
+  info(`Embedded ${testVectors.length} chunks + query vectors in one batch`);
 });
 
 await test('upsertChunks: writes to Pinecone and MongoDB', async () => {
@@ -186,7 +205,6 @@ await test('upsertChunks: writes to Pinecone and MongoDB', async () => {
 });
 
 await test('upsertChunks: idempotent — second upsert replaces first', async () => {
-  // Upsert twice — should not duplicate
   await upsertChunks(TEST_USER_ID, TEST_MEMORY_ID, TEST_CHUNKS, testVectors);
   const docs = await ChunkModel.find({ memoryId: TEST_MEMORY_ID }).lean();
   assert(docs.length === TEST_CHUNKS.length, `expected ${TEST_CHUNKS.length} docs after re-upsert, got ${docs.length}`);
@@ -203,8 +221,10 @@ await test('upsertChunks: mismatched chunks/vectors → throws', async () => {
   }
 });
 
+// Delay for Pinecone indexing
+await delay(3000);
+
 await test('query: returns scored chunks for a related query', async () => {
-  const [queryVector] = await embed(['What language compiles to JavaScript?']);
   const matches = await query(TEST_USER_ID, queryVector, 3);
   info(`Returned ${matches.length} matches`);
   if (matches.length > 0) {
@@ -217,7 +237,6 @@ await test('query: returns scored chunks for a related query', async () => {
 await test('querySimilar: finds chunks similar to a given memory', async () => {
   const similar = await querySimilar(TEST_USER_ID, TEST_MEMORY_ID, 3);
   info(`Returned ${similar.length} similar chunks`);
-  // The memory itself will be the closest match
   assert(similar.length > 0, 'expected at least one result');
 });
 
@@ -228,9 +247,11 @@ await test('deleteByMemory: removes vectors from Pinecone and docs from MongoDB'
   assert(docs.length === 0, `expected 0 docs after delete, got ${docs.length}`);
   info('MongoDB: chunk docs deleted');
 
+  // Delay for Pinecone deletion processing
+  await delay(2000);
+
   // Confirm vectors are gone — query should return no matches for this memory
-  const [queryVector] = await embed(['TypeScript typed superset JavaScript compiler']);
-  const matches = await query(TEST_USER_ID, queryVector, 10);
+  const matches = await query(TEST_USER_ID, deleteVerifyVector, 10);
   const fromThisMemory = matches.filter((m) => m.memoryId === TEST_MEMORY_ID);
   assert(fromThisMemory.length === 0, `expected 0 matches from deleted memory, got ${fromThisMemory.length}`);
   info('Pinecone: vectors deleted');
@@ -239,16 +260,6 @@ await test('deleteByMemory: removes vectors from Pinecone and docs from MongoDB'
 // =============================================================================
 // Run
 // =============================================================================
-
-// Connect to MongoDB for the vector store tests
-const mongoUrl = process.env.MONGODB_URL;
-if (!mongoUrl) {
-  console.error('❌ MONGODB_URL not set — skipping integration tests');
-  process.exit(1);
-}
-
-await mongoose.connect(mongoUrl, { serverSelectionTimeoutMS: 5000 });
-console.log('✔  MongoDB connected');
 
 printResults();
 

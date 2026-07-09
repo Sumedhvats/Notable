@@ -176,7 +176,7 @@ Browser → GET /api/auth/sign-in/social?provider=google
   title: string;              // Page title (scraped or from extension)
   description: string;        // Auto-generated summary via LLM
   contentType: string;        // 'article' | 'tweet' | 'video' | 'reddit' | 'generic'
-  source: 'extension' | 'scraper';  // How content was ingested
+  source: 'url' | 'extension';  // How content was ingested
   status: 'pending' | 'processing' | 'ready' | 'failed';  // Pipeline status
   tags: string[];             // Auto-generated + user-defined tags
   collections: ObjectId[];    // Collections this memory belongs to
@@ -856,7 +856,7 @@ gantt
   2. Check duplicate URL → return existing if found  
   3. Create Memory doc with `status: 'pending'`
   4. Store idempotency key in Redis: `{ key → memoryId }` (24h TTL)
-  5. Enqueue BullMQ job: `{ memoryId, url, mode: 'web' }`
+  5. Enqueue BullMQ job: `{ memoryId, url, mode: 'url' }`
   6. Return `202 Accepted` with `{ memoryId, status: 'pending' }`
 - [ ] Implement `createFromExtension` (same, skip scraping — sends content directly):
   1. Same idempotency check
@@ -866,7 +866,7 @@ gantt
 - [ ] **Implement the worker** (`src/workers/memory.worker.ts` process function):
   1. Receive job with `{ memoryId, url, content, mode }`
   2. Update Memory: `status: 'processing'`
-  3. If `mode === 'web'`: `scrape(url)` → get content
+  3. If `mode === 'url'`: `scrape(url)` → get content
   4. If `mode === 'extension'`: use provided content directly
   5. `chunker.chunk(content)` → array of chunks
   6. `embedder.embed(chunks)` → array of vectors (batched, 128 per req)
