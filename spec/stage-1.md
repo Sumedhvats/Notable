@@ -5,7 +5,7 @@
 ## In Scope
 
 - Chunker service — hybrid content-type-aware splitting with real token counting
-- Embedding service — Voyage AI REST API wrapper
+- Embedding service — Jina AI REST API wrapper
 - Vector store service — Pinecone upsert/query/delete
 - Chunk model — MongoDB backup of chunk text
 
@@ -59,7 +59,7 @@ Applies to: YouTube transcripts, raw text scraped from unusual pages.
 - Only applies to Bucket 2 and 3 — Bucket 1 (single chunk) has no overlap
 
 ### Token Counting
-- Use **`js-tiktoken`** for accurate token counting (cl100k encoding is close enough to Voyage's tokenizer for sizing purposes)
+- Use **`js-tiktoken`** for accurate token counting (cl100k encoding is close enough for sizing purposes)
 - Passed as the `lengthFunction` to all `RecursiveCharacterTextSplitter` instances so `chunkSize`/`chunkOverlap` are measured in real tokens
 - Fallback: character count × 0.25 if tokenizer fails to initialize
 
@@ -68,7 +68,7 @@ Applies to: YouTube transcripts, raw text scraped from unusual pages.
 ## Key Decisions
 
 - **Chunk text backed up to MongoDB** — enables re-embedding if the model changes, and backup/restore independent of Pinecone
-- **Voyage AI model configurable via env var** (`VOYAGE_MODEL`) — default `voyage-3-lite` (512 dims) so switching models doesn't require code changes
+- **Jina AI model configurable via env var** (`JINA_EMBEDDING_MODEL`) — default `jina-embeddings-v4` with Matryoshka truncation to 512 dims, so switching models doesn't require code changes
 - **Pinecone namespace = userId** — isolates user data, no filter needed on queries
 - **Vector IDs = `{memoryId}_{chunkIndex}`** — deterministic, enables upsert idempotency
 - **Chunk size = ~500 tokens** — balanced between precision and context per retrieval hit
@@ -81,7 +81,7 @@ Applies to: YouTube transcripts, raw text scraped from unusual pages.
 |---|---|
 | `[NEW] src/models/chunk.model.ts` | `{ memoryId, userId, chunkIndex, text, createdAt }` with compound unique index `{ memoryId, chunkIndex }` |
 | `[NEW] src/services/chunker.service.ts` | `chunk(text, contentType) → Array<{ text, index }>` — implements hybrid strategy above |
-| `[NEW] src/services/embedding.service.ts` | `embed(texts[]) → number[][]` via Voyage AI, batched up to 128, with exponential backoff on 429 |
+| `[NEW] src/services/embedding.service.ts` | `embed(texts[]) → number[][]` via Jina AI, batched up to 128, with exponential backoff on 429 |
 | `[NEW] src/services/vector-store.service.ts` | `upsertChunks()`, `query()`, `querySimilar()`, `deleteByMemory()` |
 
 ### Chunker internals
@@ -125,9 +125,9 @@ splitBySentences(text):
 ## Env Vars to Add
 
 ```
-VOYAGE_API_KEY=
-VOYAGE_MODEL=voyage-3-lite
-VOYAGE_DIMENSIONS=512
+JINA_API_KEY=
+JINA_EMBEDDING_MODEL=jina-embeddings-v4
+JINA_EMBEDDING_DIMENSIONS=512
 PINECONE_API_KEY=
 PINECONE_INDEX_NAME=notable
 ```
@@ -146,9 +146,9 @@ js-tiktoken
 - `chunk("tweet text", 'tweet')` → single chunk, no split
 - `chunk(longArticle, 'article')` → chunks split on headers, each prefixed with nearest heading, ~500 tokens, ~50 overlap
 - `chunk(youtubeTranscript, 'video')` → chunks split on sentence boundaries, ~500 tokens, ~50 overlap
-- `embed(["hello world"])` → returns 512-dim vector from Voyage AI
+- `embed(["hello world"])` → returns 512-dim vector from Jina AI
 - `upsertChunks(...)` writes vectors to Pinecone AND saves chunk text to MongoDB
 - `query(...)` returns relevant chunks with scores
 - `deleteByMemory(...)` cleans up both Pinecone vectors and MongoDB chunks
 - Pinecone index `notable` created (512 dims, cosine metric)
-- Voyage AI + Pinecone API keys in `.env`
+- Jina AI + Pinecone API keys in `.env`

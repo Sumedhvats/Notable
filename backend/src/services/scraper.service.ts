@@ -9,7 +9,16 @@ import logger from '../utils/logger.js';
 // Types
 // =============================================================================
 
-export type ContentType = 'article' | 'tweet' | 'video' | 'reddit' | 'generic';
+export type ContentType =
+  | 'article'
+  | 'tweet'
+  | 'video'
+  | 'reddit'
+  | 'generic'
+  | 'github'
+  | 'stackoverflow'
+  | 'wikipedia'
+  | 'hn';
 
 export type ScrapedSource =
   | 'readability'

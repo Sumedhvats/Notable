@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@better-auth/mongo-adapter": "^1.6.23",
+    "@langchain/textsplitters": "^1.0.1",
     "@mozilla/readability": "^0.5.0",
     "@pinecone-database/pinecone": "latest",
     "axios": "^1.8.4",
@@ -19,6 +20,7 @@
     "express": "^4.21.2",
     "express-rate-limit": "^8.5.2",
     "groq-sdk": "latest",
+    "js-tiktoken": "^1.0.21",
     "jsdom": "^25.0.0",
     "mongoose": "^8.13.1",
     "uuid": "^11.0.0",
