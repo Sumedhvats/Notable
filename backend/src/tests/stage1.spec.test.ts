@@ -6,16 +6,15 @@
  *  1. chunk("tweet text", 'tweet')        → single chunk, no split
  *  2. chunk(longArticle, 'article')       → header-prefixed chunks, ~500 tokens, ~50 overlap
  *  3. chunk(youtubeTranscript, 'video')   → sentence-split chunks, ~500 tokens, ~50 overlap
- *  4. embed(["hello world"])              → 512-dim vector from Voyage AI
+ *  4. embed(["hello world"])              → 512-dim vector from Jina AI
  *  5. upsertChunks(...)                   → writes to Pinecone AND MongoDB
  *  6. query(...)                          → returns relevant chunks with scores
  *  7. deleteByMemory(...)                 → cleans up Pinecone + MongoDB
  *  8. Pinecone index 'notable' exists     → (512 dims, cosine metric)
- *  9. Voyage AI + Pinecone API keys set   → in .env
+ *  9. Jina AI + Pinecone API keys set     → in .env
  *
  * Run: npx tsx src/tests/stage1.spec.test.ts
  */
-import 'dotenv/config';
 import mongoose from 'mongoose';
 import { Pinecone } from '@pinecone-database/pinecone';
 import { chunk, tokenLen } from '../services/chunker.service.js';
@@ -126,7 +125,7 @@ const TEST_USER = 'spec-test-user-' + Date.now();
 const TEST_MEMORY = new mongoose.Types.ObjectId();
 const EXPECTED_DIMS = parseInt(process.env.JINA_EMBEDDING_DIMENSIONS ?? '512', 10);
 
-// Helper to avoid Voyage AI free-tier rate limits
+// Helper to avoid embedding API rate limits
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // =============================================================================

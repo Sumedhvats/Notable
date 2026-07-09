@@ -8,7 +8,6 @@
  *
  * Run: npx tsx src/tests/stage1.integration.test.ts
  */
-import 'dotenv/config';
 import mongoose from 'mongoose';
 import { embed, EmbeddingError } from '../services/embedding.service.js';
 import {

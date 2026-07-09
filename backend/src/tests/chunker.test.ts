@@ -6,7 +6,6 @@
  *
  * Run: npx tsx src/tests/chunker.test.ts
  */
-import 'dotenv/config';
 import { chunk, tokenLen } from '../services/chunker.service.js';
 
 // =============================================================================

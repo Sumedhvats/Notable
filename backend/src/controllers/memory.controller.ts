@@ -2,6 +2,7 @@ import { Response } from 'express';
 import { AuthenticatedRequest } from '../middleware/auth.middleware.js';
 import { MemoryModel } from '../models/memory.model.js';
 import { memoryQueue } from '../config/queue.js';
+import { deleteByMemory, querySimilar } from '../services/vector-store.service.js';
 import logger from '../utils/logger.js';
 
 export async function createFromUrl(req: AuthenticatedRequest, res: Response) {
@@ -123,6 +124,151 @@ export async function getStatus(req: AuthenticatedRequest, res: Response) {
     });
   } catch (error) {
     logger.error('Error fetching memory status:', (error as Error).message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+export async function list(req: AuthenticatedRequest, res: Response) {
+  try {
+    const userId = req.userId!;
+    const page = Math.max(1, parseInt(req.query.page as string) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 20));
+    const skip = (page - 1) * limit;
+
+    const [memories, total] = await Promise.all([
+      MemoryModel.find({ userId })
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      MemoryModel.countDocuments({ userId }),
+    ]);
+
+    return res.status(200).json({
+      memories,
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit),
+    });
+  } catch (error) {
+    logger.error('Error listing memories:', (error as Error).message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+export async function get(req: AuthenticatedRequest, res: Response) {
+  try {
+    const id = req.params.id as string;
+    const userId = req.userId!;
+
+    const memory = await MemoryModel.findOne({ _id: id, userId }).lean();
+    if (!memory) {
+      return res.status(404).json({ error: 'Memory not found' });
+    }
+
+    return res.status(200).json({ memory });
+  } catch (error) {
+    logger.error('Error fetching memory:', (error as Error).message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+export async function deleteMemory(req: AuthenticatedRequest, res: Response) {
+  try {
+    const id = req.params.id as string;
+    const userId = req.userId!;
+
+    const memory = await MemoryModel.findOne({ _id: id, userId });
+    if (!memory) {
+      return res.status(404).json({ error: 'Memory not found' });
+    }
+
+    await deleteByMemory(userId, id);
+    await MemoryModel.deleteOne({ _id: id });
+
+    logger.info(`Deleted memory ${id} for user ${userId}`);
+    return res.status(200).json({ message: 'Memory deleted' });
+  } catch (error) {
+    logger.error('Error deleting memory:', (error as Error).message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+export async function rescrape(req: AuthenticatedRequest, res: Response) {
+  try {
+    const id = req.params.id as string;
+    const userId = req.userId!;
+
+    const memory = await MemoryModel.findOne({ _id: id, userId });
+    if (!memory) {
+      return res.status(404).json({ error: 'Memory not found' });
+    }
+
+    if (memory.source === 'extension') {
+      return res.status(400).json({ error: 'Cannot rescrape extension-sourced memories. Use the extension to re-save.' });
+    }
+
+    await deleteByMemory(userId, id);
+
+    await MemoryModel.findByIdAndUpdate(id, {
+      status: 'pending',
+      chunkCount: 0,
+      errorMessage: null,
+    });
+
+    await memoryQueue.add(`memory-rescrape-${id}`, {
+      memoryId: id,
+      userId,
+      mode: 'url',
+      url: memory.url,
+    });
+
+    logger.info(`Queued rescrape job for memory ${id}`);
+    return res.status(202).json({ memory: { _id: id, status: 'pending' } });
+  } catch (error) {
+    logger.error('Error rescraping memory:', (error as Error).message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+export async function getRelated(req: AuthenticatedRequest, res: Response) {
+  try {
+    const id = req.params.id as string;
+    const userId = req.userId!;
+
+    const memory = await MemoryModel.findOne({ _id: id, userId });
+    if (!memory) {
+      return res.status(404).json({ error: 'Memory not found' });
+    }
+
+    const matches = await querySimilar(userId, id, 10);
+
+    const seen = new Set<string>();
+    const relatedMemories = [];
+    for (const match of matches) {
+      if (!seen.has(match.memoryId) && match.memoryId !== id) {
+        seen.add(match.memoryId);
+        const relMemory = await MemoryModel.findById(match.memoryId, {
+          title: 1,
+          url: 1,
+          description: 1,
+        }).lean();
+        if (relMemory) {
+          relatedMemories.push({
+            _id: relMemory._id,
+            title: relMemory.title,
+            url: relMemory.url,
+            description: relMemory.description,
+            score: match.score,
+          });
+        }
+      }
+    }
+
+    return res.status(200).json({ memories: relatedMemories });
+  } catch (error) {
+    logger.error('Error fetching related memories:', (error as Error).message);
     return res.status(500).json({ error: 'Internal server error' });
   }
 }

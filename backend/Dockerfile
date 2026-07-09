@@ -1,42 +1,42 @@
 # --- Stage 1: Development ---
-FROM node:22-alpine AS dev
+FROM oven/bun:1 AS dev
 
 WORKDIR /app
 
 # Install deps first (cached layer)
-COPY package.json package-lock.json ./
-RUN npm ci
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile
 
 # Copy source
 COPY . .
 
 EXPOSE 5000
 
-CMD ["npm", "run", "dev"]
+CMD ["bun", "--watch", "src/index.ts"]
 
 
 # --- Stage 2: Build ---
-FROM node:22-alpine AS build
+FROM oven/bun:1 AS build
 
 WORKDIR /app
 
-COPY package.json package-lock.json ./
-RUN npm ci
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile
 
 COPY . .
-RUN npm run build
+RUN bun run build
 
 
 # --- Stage 3: Production ---
-FROM node:22-alpine AS prod
+FROM oven/bun:1 AS prod
 
 WORKDIR /app
 
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile --production
 
 COPY --from=build /app/dist ./dist
 
 EXPOSE 5000
 
-CMD ["npm", "start"]
+CMD ["bun", "dist/index.js"]

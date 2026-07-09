@@ -1,4 +1,3 @@
-import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import mongoose from 'mongoose';
@@ -9,6 +8,7 @@ import logger from './utils/logger.js';
 import { initAuth, closeAuth } from './lib/auth.js';
 import { defaultLimiter } from './middleware/rateLimit.middleware.js';
 import memoryRouter from './routes/memory.routes.js';
+import askRouter from './routes/ask.routes.js';
 import { memoryWorker } from './workers/memory.worker.js';
 import { redis } from './config/queue.js';
 
@@ -49,8 +49,9 @@ app.all('/api/auth/*', (req, res, next) => {
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// Register memory endpoints
+// Register endpoints
 app.use('/api', memoryRouter);
+app.use('/api', askRouter);
 
 app.get('/health', (_req, res) => {
   res.json({
