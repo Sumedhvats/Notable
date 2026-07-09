@@ -87,7 +87,7 @@ export async function upsertChunks(
   const records = chunks.map((c, i) => ({
     id: vectorId(memoryIdStr, c.index),
     values: vectors[i],
-    metadata: { memoryId: memoryIdStr, chunkIndex: c.index, userId },
+    metadata: { memoryId: memoryIdStr, chunkIndex: c.index, userId, chunkText: c.text },
   }));
 
   await ns.upsert({ records });
@@ -129,7 +129,7 @@ export async function query(
     return {
       chunkId: m.id,
       score: m.score ?? 0,
-      text: (m.metadata?.text as string) ?? '',
+      text: (m.metadata?.chunkText as string) ?? '',
       memoryId,
       chunkIndex,
     };

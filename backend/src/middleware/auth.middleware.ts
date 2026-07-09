@@ -21,6 +21,22 @@ export async function requireAuth(
   next: NextFunction
 ): Promise<void> {
   try {
+    // Support bypass for integration testing
+    if (process.env.NODE_ENV === 'test' && req.headers['x-test-user-id']) {
+      req.userId = req.headers['x-test-user-id'] as string;
+      req.userRole = (req.headers['x-test-user-role'] as string) || 'paid';
+      req.session = {
+        user: {
+          id: req.userId,
+          email: 'test@example.com',
+          name: 'Test User',
+          role: req.userRole,
+        },
+      } as any;
+      next();
+      return;
+    }
+
     const auth = getAuth();
     const session = await auth.api.getSession({
       headers: fromNodeHeaders(req.headers),

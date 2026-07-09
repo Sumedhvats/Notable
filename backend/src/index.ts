@@ -8,6 +8,9 @@ import { toNodeHandler } from 'better-auth/node';
 import logger from './utils/logger.js';
 import { initAuth, closeAuth } from './lib/auth.js';
 import { defaultLimiter } from './middleware/rateLimit.middleware.js';
+import memoryRouter from './routes/memory.routes.js';
+import { memoryWorker } from './workers/memory.worker.js';
+import { redis } from './config/queue.js';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -46,6 +49,9 @@ app.all('/api/auth/*', (req, res, next) => {
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
+// Register memory endpoints
+app.use('/api', memoryRouter);
+
 app.get('/health', (_req, res) => {
   res.json({
     status: 'ok',
@@ -56,6 +62,14 @@ app.get('/health', (_req, res) => {
 
 async function gracefulShutdown(signal: string) {
   logger.info(`${signal} received — starting graceful shutdown`);
+  try {
+    // 1. Drain worker and close it so no new jobs are accepted
+    await memoryWorker.close();
+    logger.info('BullMQ worker closed (active jobs drained)');
+  } catch (err) {
+    logger.error('Error closing worker:', (err as Error).message);
+  }
+
   server.close(async () => {
     logger.info('HTTP server closed');
     try {
@@ -70,8 +84,16 @@ async function gracefulShutdown(signal: string) {
     } catch (err) {
       logger.error('Error disconnecting MongoDB:', err);
     }
+    try {
+      // 2. Quit redis connection
+      await redis.quit();
+      logger.info('Redis connection closed');
+    } catch (err) {
+      logger.error('Error closing Redis connection:', err);
+    }
     process.exit(0);
   });
+
   setTimeout(() => {
     logger.error('Graceful shutdown timeout — forcing exit');
     process.exit(1);
@@ -92,6 +114,14 @@ const start = async () => {
       const auth = initAuth();
       logger.success('Better Auth initialized');
       _authHandler = toNodeHandler(auth);
+    }
+
+    // Ping Redis to verify connection before starting the worker
+    try {
+      await redis.ping();
+      logger.success('Connected to Redis');
+    } catch (redisErr) {
+      logger.warn(`Redis connection failed: ${(redisErr as Error).message}. BullMQ will run in background and auto-reconnect.`);
     }
 
     server = app.listen(PORT, () => {
