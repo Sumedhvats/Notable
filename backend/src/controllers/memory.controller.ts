@@ -244,16 +244,28 @@ export async function getRelated(req: AuthenticatedRequest, res: Response) {
 
     const matches = await querySimilar(userId, id, 10);
 
-    const seen = new Set<string>();
+    // Deduplicate memoryIds and exclude self
+    const uniqueMemoryIds = [...new Set(
+      matches
+        .map((m) => m.memoryId)
+        .filter((mid) => mid !== id),
+    )];
+
+    // Single batch query instead of N+1 individual findById calls
+    const memories = await MemoryModel.find(
+      { _id: { $in: uniqueMemoryIds } },
+      { title: 1, url: 1, description: 1 },
+    ).lean();
+
+    const memoryMap = new Map(memories.map((m) => [m._id.toString(), m]));
+
+    // Build results preserving Pinecone's relevance ordering
     const relatedMemories = [];
+    const seen = new Set<string>();
     for (const match of matches) {
       if (!seen.has(match.memoryId) && match.memoryId !== id) {
         seen.add(match.memoryId);
-        const relMemory = await MemoryModel.findById(match.memoryId, {
-          title: 1,
-          url: 1,
-          description: 1,
-        }).lean();
+        const relMemory = memoryMap.get(match.memoryId);
         if (relMemory) {
           relatedMemories.push({
             _id: relMemory._id,
