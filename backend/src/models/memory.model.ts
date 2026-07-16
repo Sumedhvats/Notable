@@ -9,6 +9,8 @@ export interface IMemory extends Document {
   source: 'url' | 'extension';
   status: 'pending' | 'processing' | 'ready' | 'failed';
   tags: string[];
+  entities: string[];
+  summary: string;
   collections: mongoose.Types.ObjectId[];
   chunkCount: number;
   errorMessage: string | null;
@@ -51,6 +53,8 @@ const MemorySchema: Schema = new Schema(
       default: 'pending',
     },
     tags: { type: [String], default: [] },
+    entities: { type: [String], default: [] },
+    summary: { type: String, default: '' },
     collections: [{ type: Schema.Types.ObjectId, ref: 'Collection' }],
     chunkCount: { type: Number, default: 0 },
     errorMessage: { type: String, default: null },
@@ -73,5 +77,7 @@ MemorySchema.index({ url: 1, userId: 1 }, { unique: true });
 MemorySchema.index({ userId: 1, createdAt: -1 });
 // Index for monitoring status
 MemorySchema.index({ status: 1 });
+// Text index for keyword search across title, description, tags, entities
+MemorySchema.index({ title: 'text', description: 'text', tags: 'text', entities: 'text' });
 
 export const MemoryModel = mongoose.model<IMemory>('Memory', MemorySchema);

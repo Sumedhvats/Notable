@@ -20,3 +20,17 @@ export const memoryQueue = new Queue('memory-pipeline', {
     removeOnFail: { count: 500 }, // Keep last 500 failed jobs for debugging
   },
 });
+
+export const enrichmentQueue = new Queue('enrichment-pipeline', {
+  connection: redis as any,
+  defaultJobOptions: {
+    attempts: 3,
+    backoff: {
+      type: 'exponential',
+      delay: 3000, // 3s, 6s, 12s — slightly longer than memory pipeline
+    },
+    removeOnComplete: { count: 100 },
+    removeOnFail: { count: 200 },
+  },
+});
+

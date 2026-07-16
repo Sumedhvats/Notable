@@ -10,6 +10,8 @@ import {
   deleteMemory,
   rescrape,
   getRelated,
+  exportMemoryMd,
+  exportCollectionMd,
 } from '../controllers/memory.controller.js';
 import {
   createMemorySchema,
@@ -18,7 +20,7 @@ import {
 
 const router = Router();
 
-// List memories (paginated)
+// List memories (paginated, with search/filter)
 router.get('/memories', requireAuth, list);
 
 // Create memory from URL
@@ -46,10 +48,17 @@ router.get('/memories/:id/status', requireAuth, getStatus);
 // Get related memories (Pinecone similarity)
 router.get('/memories/:id/related', requireAuth, getRelated);
 
+// Export memory as markdown
+router.get('/memories/:id/export/markdown', requireAuth, exportMemoryMd);
+
 // Rescrape a memory
 router.post('/memories/:id/rescrape', requireAuth, rescrape);
 
 // Delete a memory (cascade)
 router.delete('/memories/:id', requireAuth, deleteMemory);
 
+// Export collection as markdown
+router.get('/collections/:id/export/markdown', requireAuth, exportCollectionMd);
+
 export default router;
+

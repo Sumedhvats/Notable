@@ -9,7 +9,10 @@ import { initAuth, closeAuth } from './lib/auth.js';
 import { defaultLimiter } from './middleware/rateLimit.middleware.js';
 import memoryRouter from './routes/memory.routes.js';
 import askRouter from './routes/ask.routes.js';
+import collectionRouter from './routes/collection.routes.js';
+import graphRouter from './routes/graph.routes.js';
 import { memoryWorker } from './workers/memory.worker.js';
+import { enrichmentWorker } from './workers/enrichment.worker.js';
 import { redis } from './config/queue.js';
 
 const app = express();
@@ -52,6 +55,8 @@ app.use(express.urlencoded({ extended: true }));
 // Register endpoints
 app.use('/api', memoryRouter);
 app.use('/api', askRouter);
+app.use('/api', collectionRouter);
+app.use('/api', graphRouter);
 
 app.get('/health', (_req, res) => {
   res.json({
@@ -64,9 +69,10 @@ app.get('/health', (_req, res) => {
 async function gracefulShutdown(signal: string) {
   logger.info(`${signal} received — starting graceful shutdown`);
   try {
-    // 1. Drain worker and close it so no new jobs are accepted
+    // 1. Drain workers and close them so no new jobs are accepted
     await memoryWorker.close();
-    logger.info('BullMQ worker closed (active jobs drained)');
+    await enrichmentWorker.close();
+    logger.info('BullMQ workers closed (active jobs drained)');
   } catch (err) {
     logger.error('Error closing worker:', (err as Error).message);
   }

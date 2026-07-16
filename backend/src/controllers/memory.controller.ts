@@ -3,6 +3,7 @@ import { AuthenticatedRequest } from '../middleware/auth.middleware.js';
 import { MemoryModel } from '../models/memory.model.js';
 import { memoryQueue } from '../config/queue.js';
 import { deleteByMemory, querySimilar } from '../services/vector-store.service.js';
+import { exportMemoryMarkdown, exportCollectionMarkdown } from '../services/export.service.js';
 import logger from '../utils/logger.js';
 
 export async function createFromUrl(req: AuthenticatedRequest, res: Response) {
@@ -135,13 +136,79 @@ export async function list(req: AuthenticatedRequest, res: Response) {
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 20));
     const skip = (page - 1) * limit;
 
+    // Build filter query
+    const filter: Record<string, unknown> = { userId };
+
+    // Text search
+    const q = req.query.q as string;
+    if (q && q.trim().length > 0) {
+      filter.$text = { $search: q.trim() };
+    }
+
+    // Content type filter
+    const type = req.query.type as string;
+    if (type) {
+      filter.contentType = type;
+    }
+
+    // Tags filter (comma-separated)
+    const tagsParam = req.query.tags as string;
+    if (tagsParam) {
+      const tags = tagsParam.split(',').map((t) => t.trim()).filter(Boolean);
+      if (tags.length > 0) {
+        filter.tags = { $all: tags };
+      }
+    }
+
+    // Entities filter (comma-separated)
+    const entitiesParam = req.query.entities as string;
+    if (entitiesParam) {
+      const entities = entitiesParam.split(',').map((e) => e.trim().toLowerCase()).filter(Boolean);
+      if (entities.length > 0) {
+        filter.entities = { $all: entities };
+      }
+    }
+
+    // Collection filter
+    const collectionId = req.query.collectionId as string;
+    if (collectionId) {
+      filter.collections = collectionId;
+    }
+
+    // Date range filter
+    const from = req.query.from as string;
+    const to = req.query.to as string;
+    if (from || to) {
+      const dateFilter: Record<string, Date> = {};
+      if (from) dateFilter.$gte = new Date(from);
+      if (to) dateFilter.$lte = new Date(to);
+      filter.createdAt = dateFilter;
+    }
+
+    // Sort
+    const sortParam = req.query.sort as string;
+    let sort: Record<string, 1 | -1> = { createdAt: -1 };
+    if (sortParam === 'oldest') sort = { createdAt: 1 };
+    else if (sortParam === 'title') sort = { title: 1 };
+    // If text search is active, sort by relevance score by default
+    if (q && sortParam !== 'oldest' && sortParam !== 'title') {
+      sort = { score: { $meta: 'textScore' } as any, createdAt: -1 };
+    }
+
+    const query = MemoryModel.find(filter);
+
+    // Add text score projection for text search
+    if (q) {
+      query.select({ score: { $meta: 'textScore' } });
+    }
+
     const [memories, total] = await Promise.all([
-      MemoryModel.find({ userId })
-        .sort({ createdAt: -1 })
+      query
+        .sort(sort)
         .skip(skip)
         .limit(limit)
         .lean(),
-      MemoryModel.countDocuments({ userId }),
+      MemoryModel.countDocuments(filter),
     ]);
 
     return res.status(200).json({
@@ -281,6 +348,48 @@ export async function getRelated(req: AuthenticatedRequest, res: Response) {
     return res.status(200).json({ memories: relatedMemories });
   } catch (error) {
     logger.error('Error fetching related memories:', (error as Error).message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// =============================================================================
+// Markdown Export
+// =============================================================================
+
+export async function exportMemoryMd(req: AuthenticatedRequest, res: Response) {
+  try {
+    const userId = req.userId!;
+    const id = req.params.id as string;
+
+    const result = await exportMemoryMarkdown(id, userId);
+    if (!result) {
+      return res.status(404).json({ error: 'Memory not found' });
+    }
+
+    res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
+    return res.status(200).send(result.markdown);
+  } catch (error) {
+    logger.error('Error exporting memory:', (error as Error).message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+export async function exportCollectionMd(req: AuthenticatedRequest, res: Response) {
+  try {
+    const userId = req.userId!;
+    const id = req.params.id as string;
+
+    const result = await exportCollectionMarkdown(id, userId);
+    if (!result) {
+      return res.status(404).json({ error: 'Collection not found' });
+    }
+
+    res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
+    return res.status(200).send(result.markdown);
+  } catch (error) {
+    logger.error('Error exporting collection:', (error as Error).message);
     return res.status(500).json({ error: 'Internal server error' });
   }
 }

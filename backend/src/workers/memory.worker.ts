@@ -1,5 +1,5 @@
 import { Worker } from 'bullmq';
-import { redis } from '../config/queue.js';
+import { redis, enrichmentQueue } from '../config/queue.js';
 import { scrape } from '../services/scraper.service.js';
 import { chunk } from '../services/chunker.service.js';
 import { embed } from '../services/embedding.service.js';
@@ -73,6 +73,11 @@ export const memoryWorker = new Worker(
       });
 
       logger.info(`Worker job ${job.id} completed successfully for memory ${memoryId}`);
+
+      // Enqueue enrichment (auto-tags, summary, entity extraction) as a separate job
+      // This runs asynchronously — if it fails, the memory is still 'ready'
+      await enrichmentQueue.add(`enrich-${memoryId}`, { memoryId, userId });
+      logger.debug(`Queued enrichment job for memory ${memoryId}`);
     } catch (err) {
       const errMsg = (err as Error).message;
       logger.error(`Worker job ${job.id} failed for memory ${memoryId}: ${errMsg}`);
