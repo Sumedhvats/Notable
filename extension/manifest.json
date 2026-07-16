@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "Notable",
+  "version": "1.0.0",
+  "description": "Save and organize web content with AI-powered search and knowledge graphs.",
+
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "bookmarks",
+    "storage",
+    "cookies"
+  ],
+
+  "host_permissions": [
+    "http://localhost:5000/*",
+    "https://*.notable.app/*"
+  ],
+
+  "background": {
+    "service_worker": "dist/background.js",
+    "type": "module"
+  },
+
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Notable — Save this page"
+  },
+
+  "options_page": "options.html",
+
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
