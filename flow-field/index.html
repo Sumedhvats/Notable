@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Flow Field Background</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+      touch-action: none;
+      -webkit-text-size-adjust: 100%;
+    }
+    canvas {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      display: block;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <!-- Explicit default width & height attributes to eliminate initial CLS (Cumulative Layout Shift) -->
+  <canvas id="c" width="800" height="600" aria-hidden="true"></canvas>
+  <script>
+    (function () {
+      'use strict';
+
+      const canvas = document.getElementById('c');
+      const ctx = canvas.getContext('2d', { alpha: false });
+
+      let physW = 0, physH = 0;
+      let cols = 0, rows = 0;
+
+      // Fixed grid dimensions in PHYSICAL screen pixels (Zoom-Proof)
+      const GX = 14; // physical pixels between columns
+      const GY = 9;  // physical pixels between rows
+      const MAX_HALF_DASH = 6.0;
+
+      // Pre-allocated flat buffers (0B GC overhead)
+      const NUM_BUCKETS = 6;
+      const MAX_LINES = 32000;
+      const bucketBuffers = new Array(NUM_BUCKETS);
+      const bucketCounts = new Uint32Array(NUM_BUCKETS);
+
+      for (let i = 0; i < NUM_BUCKETS; i++) {
+        bucketBuffers[i] = new Float32Array(MAX_LINES * 4);
+      }
+
+      // Pre-computed alpha styles
+      const styles = new Array(NUM_BUCKETS);
+      for (let i = 0; i < NUM_BUCKETS; i++) {
+        const alpha = ((i + 1) / NUM_BUCKETS * 0.85 + 0.15).toFixed(2);
+        styles[i] = 'rgba(235, 238, 242, ' + alpha + ')';
+      }
+
+      // Per-cell state buffer for smooth hover animation (+ transformation)
+      let cellStates = null;
+
+      // Mouse & touch interaction tracking
+      let mouseX = -1000, mouseY = -1000;
+      let mouseActive = false;
+      let mouseAlpha = 0;
+
+      function updateMouse(e) {
+        const dpr = window.devicePixelRatio || 1;
+        mouseX = e.clientX * dpr;
+        mouseY = e.clientY * dpr;
+        mouseActive = true;
+      }
+
+      window.addEventListener('pointermove', updateMouse, { passive: true });
+      window.addEventListener('pointerleave', () => { mouseActive = false; }, { passive: true });
+
+      window.addEventListener('touchstart', (e) => {
+        if (e.touches.length > 0) {
+          const dpr = window.devicePixelRatio || 1;
+          mouseX = e.touches[0].clientX * dpr;
+          mouseY = e.touches[0].clientY * dpr;
+          mouseActive = true;
+        }
+      }, { passive: true });
+
+      window.addEventListener('touchmove', (e) => {
+        if (e.touches.length > 0) {
+          const dpr = window.devicePixelRatio || 1;
+          mouseX = e.touches[0].clientX * dpr;
+          mouseY = e.touches[0].clientY * dpr;
+          mouseActive = true;
+        }
+      }, { passive: true });
+
+      window.addEventListener('touchend', () => { mouseActive = false; }, { passive: true });
+
+      // Zoom-Proof Resize Handler: Lock canvas resolution to physical hardware pixels
+      function resize() {
+        const cssW = window.innerWidth || document.documentElement.clientWidth || 800;
+        const cssH = window.innerHeight || document.documentElement.clientHeight || 600;
+        const dpr = window.devicePixelRatio || 1;
+
+        physW = Math.round(cssW * dpr);
+        physH = Math.round(cssH * dpr);
+
+        canvas.width = physW;
+        canvas.height = physH;
+
+        cols = Math.ceil(physW / GX) + 1;
+        rows = Math.ceil(physH / GY) + 1;
+
+        const totalCells = cols * rows;
+        if (!cellStates || cellStates.length < totalCells) {
+          cellStates = new Float32Array(totalCells);
+        }
+      }
+
+      window.addEventListener('resize', resize, { passive: true });
+      window.addEventListener('load', resize, { passive: true });
+      
+      let mediaQuery;
+      function watchZoom() {
+        if (mediaQuery) mediaQuery.removeEventListener('change', watchZoom);
+        const dpr = window.devicePixelRatio || 1;
+        mediaQuery = window.matchMedia(`(resolution: ${dpr}dppx)`);
+        mediaQuery.addEventListener('change', watchZoom, { once: true });
+        resize();
+      }
+      watchZoom();
+
+      function render(time) {
+        requestAnimationFrame(render);
+
+        const t = time * 0.0006;
+        const dpr = window.devicePixelRatio || 1;
+        const hoverRadius = 130 * dpr;
+        const invRadius = 1 / hoverRadius;
+
+        if (mouseActive) {
+          mouseAlpha += (1 - mouseAlpha) * 0.12;
+        } else {
+          mouseAlpha += (0 - mouseAlpha) * 0.08;
+        }
+
+        bucketCounts.fill(0);
+
+        ctx.fillStyle = '#000000';
+        ctx.fillRect(0, 0, physW, physH);
+
+        const invW = 1 / (physW || 1);
+        const invH = 1 / (physH || 1);
+
+        let cellIdx = 0;
+        for (let r = 0; r < rows; r++) {
+          const y = r * GY;
+          const ny = y * invH;
+          const dy = ny - 0.5;
+          const dyMouse = y - mouseY;
+
+          for (let c = 0; c < cols; c++) {
+            const x = c * GX;
+            const nx = x * invW;
+            const dx = nx - 0.5;
+
+            let targetState = 0;
+            if (mouseAlpha > 0.001) {
+              const dxMouse = x - mouseX;
+              const distSq = dxMouse * dxMouse + dyMouse * dyMouse;
+              if (distSq < hoverRadius * hoverRadius) {
+                const dist = Math.sqrt(distSq);
+                const norm = 1 - dist * invRadius;
+                targetState = norm * norm * mouseAlpha;
+              }
+            }
+
+            let curState = cellStates ? cellStates[cellIdx] : 0;
+            curState += (targetState - curState) * 0.2;
+            if (cellStates) cellStates[cellIdx] = curState;
+            cellIdx++;
+
+            const wave1 = Math.sin(nx * 6.28 * 1.4 + t * 1.0) * 0.16
+                     + Math.cos(ny * 6.28 * 2.2 - t * 0.7) * 0.08;
+            const wave2 = Math.sin(ny * 6.28 * 1.1 + nx * 3.14 + t * 0.5) * 0.12;
+
+            const centerDist = Math.abs(dx * 1.3 + wave1);
+            const yMod = Math.cos(dy * 2.6 + wave2);
+
+            let intensity = (1.0 - centerDist * 1.4) * yMod;
+
+            const ripple = Math.sin(nx * 16.0 - ny * 12.0 + t * 1.3) * 0.28;
+            if (intensity > 0.08) {
+              intensity += ripple * 0.35;
+            }
+
+            if (curState > 0.01) {
+              intensity = Math.max(intensity, 0.25 * curState);
+            }
+
+            if (intensity <= 0.05) continue;
+            if (intensity > 1.0) intensity = 1.0;
+
+            const halfLen = 0.8 + intensity * MAX_HALF_DASH;
+            const bIdx = (intensity * (NUM_BUCKETS - 1)) | 0;
+
+            const cnt = bucketCounts[bIdx];
+            if (cnt < MAX_LINES) {
+              const buf = bucketBuffers[bIdx];
+              const idx = cnt << 2;
+              buf[idx]     = x - halfLen;
+              buf[idx + 1] = y;
+              buf[idx + 2] = x + halfLen;
+              buf[idx + 3] = y;
+              let added = 1;
+
+              if (curState > 0.02) {
+                const vertHalfLen = halfLen * curState;
+                if (cnt + 1 < MAX_LINES) {
+                  buf[idx + 4] = x;
+                  buf[idx + 5] = y - vertHalfLen;
+                  buf[idx + 6] = x;
+                  buf[idx + 7] = y + vertHalfLen;
+                  added = 2;
+                }
+              }
+              bucketCounts[bIdx] = cnt + added;
+            }
+          }
+        }
+
+        ctx.lineWidth = 1.2;
+        ctx.lineCap = 'butt';
+
+        for (let i = 0; i < NUM_BUCKETS; i++) {
+          const count = bucketCounts[i];
+          if (count === 0) continue;
+
+          const buf = bucketBuffers[i];
+          ctx.strokeStyle = styles[i];
+          ctx.beginPath();
+
+          const total = count << 2;
+          for (let j = 0; j < total; j += 4) {
+            ctx.moveTo(buf[j], buf[j + 1]);
+            ctx.lineTo(buf[j + 2], buf[j + 3]);
+          }
+          ctx.stroke();
+        }
+      }
+
+      requestAnimationFrame(render);
+    })();
+  </script>
+</body>
+</html>
